@@ -19,3 +19,14 @@ $cfg['LoginCookieStore'] = 0;
 $cfg['VersionCheck']     = false;
 $cfg['ShowServerInfo']   = false;
 $cfg['SendErrorReports'] = 'never';
+
+/*
+ * Encrypt the phpMyAdmin <-> MySQL connection (fixes "SSL is not being used").
+ * MySQL 8.4 serves TLS by default with a self-signed auto-generated cert, so we
+ * encrypt WITHOUT identity verification (verifying that self-signed cert fails).
+ * The PMA_SSL_VERIFY env var can't do this — the image only honours the value 1,
+ * so `ssl_verify` must be set to false here in PHP.
+ * `1` below is the server index; it is 1 for a single PMA_HOST.
+ */
+$cfg['Servers'][1]['ssl']        = true;
+$cfg['Servers'][1]['ssl_verify'] = false;
