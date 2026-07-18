@@ -1,0 +1,140 @@
+# =============================================================================
+# Secure MySQL 8.4 (LTS) + phpMyAdmin stack
+# =============================================================================
+# Security model
+#   * MySQL sits on an INTERNAL network with no route to the internet and is
+#     reachable only by phpMyAdmin (and, optionally, a loopback-bound host port).
+#   * Credentials are supplied through Docker secrets (files), never inline env.
+#   * Both containers run with `no-new-privileges`, capped logs and resource
+#     limits. Images are version-pinned.
+#   * Nothing binds to 0.0.0.0 — host ports are bound to 127.0.0.1 only.
+#
+# Quick start
+#   1. cp .env.example .env
+#   2. ./scripts/generate-secrets.ps1   (Windows)  |  ./scripts/generate-secrets.sh
+#   3. docker compose up -d
+#   4. open http://localhost:8080  (user: appuser, password: secrets/mysql_password.txt)
+# =============================================================================
+
+name: docker-mysql
+
+services:
+  db:
+    image: mysql:8.4
+    container_name: mysql
+    restart: unless-stopped
+    # Server hardening is passed as flags on purpose: a bind-mounted my.cnf is
+    # silently IGNORED on Windows/macOS bind mounts (the file appears
+    # world-writable), so a *.cnf here would give a false sense of security.
+    command:
+      - --skip-name-resolve        # match accounts on IP, not spoofable DNS
+      - --local-infile=0           # disable server-side LOAD DATA LOCAL INFILE
+      - --secure-file-priv=/var/lib/mysql-files  # confine import/export I/O
+    environment:
+      # Passwords are read from files (Docker secrets), not from env values.
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-appdb}
+      MYSQL_USER: ${MYSQL_USER:-appuser}
+    secrets:
+      - mysql_root_password
+      - mysql_password
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./mysql/initdb:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backend
+    # MySQL is deliberately NOT published to the host: it is reachable only by
+    # phpMyAdmin over the internal `backend` network. From the host, use:
+    #   docker compose exec db mysql -u appuser -p appdb
+    #
+    # To expose it on loopback for a native client (Workbench/DBeaver/CLI),
+    # attach this service to `frontend` as well and publish the port — replace
+    # the two `networks:` lines above with the block below:
+    #   networks: [backend, frontend]
+    #   ports: ["127.0.0.1:${MYSQL_HOST_PORT:-3306}:3306"]
+    # (Joining `frontend` also gives the database outbound network access.)
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'mysqladmin ping -h 127.0.0.1 -u root -p"$(cat /run/secrets/mysql_root_password)" --silent'
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1g
+        reservations:
+          memory: 512m
+
+  phpmyadmin:
+    image: phpmyadmin:5.2-apache
+    container_name: phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      # Only ever connect to the bundled MySQL — no free-form server field.
+      PMA_ARBITRARY: 0
+      PMA_ABSOLUTE_URI: ${PMA_ABSOLUTE_URI:-http://localhost:8080/}
+      UPLOAD_LIMIT: ${PMA_UPLOAD_LIMIT:-64M}
+      HIDE_PHP_VERSION: 1
+    volumes:
+      - ./phpmyadmin/config.user.inc.php:/etc/phpmyadmin/config.user.inc.php:ro
+    networks:
+      - frontend   # host-facing published port
+      - backend    # talk to MySQL
+    # Loopback only. Put a TLS-terminating reverse proxy in front for remote use.
+    ports:
+      - "127.0.0.1:${PMA_HOST_PORT:-8080}:80"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512m
+
+networks:
+  # Host-reachable network for the phpMyAdmin published port.
+  frontend:
+    driver: bridge
+  # No gateway to the outside world; database traffic never leaves here.
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  db_data:
+    driver: local
+
+secrets:
+  mysql_root_password:
+    file: ./secrets/mysql_root_password.txt
+  mysql_password:
+    file: ./secrets/mysql_password.txt

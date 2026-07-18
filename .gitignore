@@ -1,0 +1,10 @@
+# Local environment overrides
+.env
+
+# Docker secrets — real credentials must NEVER be committed
+secrets/*.txt
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
