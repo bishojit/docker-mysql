@@ -1,0 +1,82 @@
+# =============================================================================
+# phpMyAdmin (standalone) — connects to an EXISTING MySQL / MariaDB server.
+# =============================================================================
+# This stack runs ONLY phpMyAdmin; it does NOT start a database. Point it at:
+#   * a DB on this machine / Docker Desktop  -> PMA_HOST=host.docker.internal
+#   * a remote server                        -> PMA_HOST=db.example.com
+#   * a DB in another Docker network         -> see README (external network)
+#
+# Security: bound to 127.0.0.1 only, no-new-privileges, all Linux caps dropped,
+# arbitrary-server login off by default, version pings off, pinned image.
+#
+# Quick start:
+#   cp .env.example .env      # then set PMA_HOST
+#   docker compose up -d
+#   open http://localhost:8080
+# =============================================================================
+
+name: phpmyadmin
+
+services:
+  phpmyadmin:
+    image: phpmyadmin:5.2-apache
+    container_name: phpmyadmin
+    restart: unless-stopped
+    environment:
+      # Target database server. Overridden from .env.
+      PMA_HOST: ${PMA_HOST:-host.docker.internal}
+      PMA_PORT: ${PMA_PORT:-3306}
+      # 0 = lock phpMyAdmin to PMA_HOST only (no free-form server field).
+      PMA_ARBITRARY: ${PMA_ARBITRARY:-0}
+      PMA_ABSOLUTE_URI: ${PMA_ABSOLUTE_URI:-http://localhost:8080/}
+      UPLOAD_LIMIT: ${PMA_UPLOAD_LIMIT:-64M}
+      HIDE_PHP_VERSION: 1
+    volumes:
+      - ./config.user.inc.php:/etc/phpmyadmin/config.user.inc.php:ro
+    # Loopback only. Put a TLS-terminating reverse proxy in front for remote use.
+    ports:
+      - "127.0.0.1:${PMA_HOST_PORT:-8080}:80"
+    # Makes PMA_HOST=host.docker.internal resolve to the Docker host on Linux
+    # too (it already works out of the box on Docker Desktop / Windows / macOS).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # php is always present in this image; avoids depending on curl/wget.
+      # No '$' variables here — Compose would try to interpolate them.
+      test:
+        - CMD-SHELL
+        - php -r 'exit(@fsockopen("127.0.0.1",80)?0:1);'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512m
+
+# --- Reaching a MySQL that runs in ANOTHER compose project -------------------
+# 1. Find that project's DB network:   docker network ls
+# 2. Set PMA_HOST in .env to the database's service/container name (e.g. `db`).
+# 3. Uncomment the block below (set the real network name) and add
+#    `networks: [default, dbnet]` under the phpmyadmin service above.
+#
+# networks:
+#   dbnet:
+#     external: true
+#     name: docker-mysql_backend
