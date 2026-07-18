@@ -1,0 +1,67 @@
+# =============================================================================
+# phpMyAdmin for Dokploy (Traefik reverse proxy).
+# =============================================================================
+# Fixes vs the local file:
+#   * Attached to the external `dokploy-network` so Traefik can reach it.
+#   * Traefik routed to the REAL container port -> 80 (phpMyAdmin/Apache).
+#   * No host `ports:` mapping (Traefik routes over the network, not host ports).
+#   * No `cap_drop: ALL` (it blocked the blowfish-secret file -> login errors).
+#   * No fixed `container_name` (conflicts under Swarm).
+#
+# Set your real values in the Dokploy "Environment" tab (or a .env):
+#   PMA_HOST  = the MySQL service/host phpMyAdmin should connect to
+#   PMA_DOMAIN= ta360-phpmyadmin-sjwdgb-b79596-200-97-175-42.sslip.io
+# =============================================================================
+
+services:
+  phpmyadmin:
+    image: phpmyadmin:5.2-apache
+    restart: unless-stopped
+    environment:
+      PMA_HOST: ${PMA_HOST:?set PMA_HOST to your MySQL host/service}
+      PMA_PORT: ${PMA_PORT:-3306}
+      PMA_ARBITRARY: ${PMA_ARBITRARY:-0}
+      # MUST match the public URL, otherwise redirects/assets break behind TLS.
+      PMA_ABSOLUTE_URI: "https://${PMA_DOMAIN}/"
+      UPLOAD_LIMIT: ${PMA_UPLOAD_LIMIT:-64M}
+      HIDE_PHP_VERSION: 1
+    volumes:
+      - ./config.user.inc.php:/etc/phpmyadmin/config.user.inc.php:ro
+    networks:
+      - dokploy-network
+    security_opt:
+      - no-new-privileges:true      # kept; does NOT break the entrypoint
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\",80)?0:1);'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      # Prefer configuring the domain in the Dokploy UI (it manages these).
+      # These are here in case you wire Traefik manually. Verify the entrypoint
+      # and certresolver names match YOUR Dokploy Traefik config.
+      # NOTE: if Dokploy deploys this as a SWARM stack, move this whole block
+      # under `deploy: { labels: [...] }` — Traefik's swarm provider ignores
+      # plain container labels.
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      - "traefik.http.services.ta360-phpmyadmin.loadbalancer.server.port=80"
+      # HTTPS router
+      - "traefik.http.routers.ta360-phpmyadmin.rule=Host(`${PMA_DOMAIN}`)"
+      - "traefik.http.routers.ta360-phpmyadmin.entrypoints=websecure"
+      - "traefik.http.routers.ta360-phpmyadmin.tls.certresolver=letsencrypt"
+      # HTTP -> HTTPS redirect
+      - "traefik.http.routers.ta360-phpmyadmin-web.rule=Host(`${PMA_DOMAIN}`)"
+      - "traefik.http.routers.ta360-phpmyadmin-web.entrypoints=web"
+      - "traefik.http.routers.ta360-phpmyadmin-web.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+networks:
+  dokploy-network:
+    external: true
